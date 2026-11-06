@@ -40,7 +40,7 @@ Optional: **auto-close idle Android build daemons** (Gradle/Kotlin) after 15 min
 Requires macOS 14+ and the Xcode command line tools.
 
 ```bash
-git clone <this repo>
+git clone https://github.com/phmucelin/heatwatch.git
 cd heatwatch
 ./scripts/build-app.sh --install   # builds, copies to /Applications and launches
 ```
@@ -73,3 +73,7 @@ prints the same data the popover shows. Please include it in bug reports.
 - Chrome → Settings → Performance → Memory Saver (maximum).
 - External monitor at 60–100 Hz instead of 144/165 Hz means less work for WindowServer and the GPU.
 - Lift the Mac off the desk (stand or cooling pad): the bottom case is the heatsink.
+
+## License
+
+[MIT](LICENSE)
