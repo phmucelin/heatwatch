@@ -241,13 +241,18 @@ private struct CulpritRow: View {
     @ViewBuilder private var action: some View {
         if !culprit.killable {
             EmptyView()
-        } else if monitor.needsForce(culprit) {
-            Button("Forçar") { monitor.forceQuit(culprit) }
-                .buttonStyle(.borderedProminent)
+        } else if let phase = monitor.quitPhases[culprit.id], phase != .failed {
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.small)
+                Text(phase == .forcing ? "Forçando…" : "Fechando…")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        } else if monitor.quitPhases[culprit.id] == .failed {
+            Button("Tentar de novo") { monitor.quit(culprit) }
+                .buttonStyle(.bordered)
                 .tint(.red)
-                .help("Ainda aberto. Mata na hora (dados não salvos se perdem).")
-        } else if monitor.isQuitting(culprit) {
-            ProgressView().controlSize(.small)
+                .help("Foi encerrado à força, mas o sistema abriu de novo sozinho.")
         } else if confirming {
             Button("Confirmar") {
                 confirming = false
@@ -255,6 +260,7 @@ private struct CulpritRow: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(.red)
+            .help("Se não fechar em \(Int(Killer.grace)) s, é encerrado à força (o que não foi salvo se perde).")
         } else {
             Button("Encerrar") {
                 confirming = true

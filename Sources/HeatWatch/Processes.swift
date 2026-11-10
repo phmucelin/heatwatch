@@ -121,11 +121,26 @@ enum ProcessScanner {
         var isEmulator: Bool { base.hasPrefix("qemu-system") || path.contains("/emulator/") }
     }
 
-    static func scan() -> [Culprit] {
-        let me = getuid()
+    private static func running() -> (processes: [RawProcess], arguments: [pid_t: String]) {
         let myPid = getpid()
         let processes = listProcesses().filter { $0.pid > 0 && $0.pid != myPid }
-        let arguments = readArguments(processes.filter { $0.base == "java" || $0.isEmulator }.map(\.pid))
+        return (processes, readArguments(processes.filter { $0.base == "java" || $0.isEmulator }.map(\.pid)))
+    }
+
+    /// Every process still alive in a culprit's group, even when the group is
+    /// no longer heavy enough to be listed.
+    static func survivors(of culprit: Culprit) -> [pid_t] {
+        let (processes, arguments) = running()
+        return processes.filter { process in
+            guard classify(process, arguments: arguments[process.pid]).0 == culprit.id else { return false }
+            // CoreSimulator's background services outlive the devices and come back on demand.
+            return culprit.kind != .simulators || process.base == "launchd_sim" || process.path.contains("Simulator.app/")
+        }.map(\.pid)
+    }
+
+    static func scan() -> [Culprit] {
+        let me = getuid()
+        let (processes, arguments) = running()
 
         var groups: [String: Culprit] = [:]
         var hasOwnProcess: Set<String> = []
@@ -248,11 +263,19 @@ enum ProcessScanner {
             return ("native-build", "Build do Xcode (iOS)", .nativeBuild)
         }
         if let range = path.range(of: ".app/") {
-            let bundle = String(path[..<range.lowerBound]) + ".app"
+            let bundle = canonical(String(path[..<range.lowerBound]) + ".app")
             let name = ((bundle as NSString).lastPathComponent as NSString).deletingPathExtension
             return ("app:" + bundle, name, .app(bundlePath: bundle))
         }
         return ("proc:" + base, base, .process)
+    }
+
+    /// A helper started through a symlink (/tmp, /var, Homebrew) reports a
+    /// different path than its app; resolving it keeps them in one group.
+    static func canonical(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     private static func isSystemPath(_ path: String) -> Bool {
@@ -275,17 +298,44 @@ enum ProcessScanner {
 }
 
 enum Killer {
+    /// How long a polite quit gets before whatever is left is killed.
+    static let grace: TimeInterval = 5
+
+    /// Quits politely, kills what is still alive after `grace`, and only
+    /// reports success once nothing of the group is left running.
+    static func close(_ culprit: Culprit, onForce: @Sendable () async -> Void = {}) async -> Bool {
+        quit(culprit)
+        if await isGone(culprit, within: grace) { return true }
+        await onForce()
+        // A dying parent can still spawn a helper, so sweep more than once.
+        for _ in 0..<3 {
+            ProcessScanner.survivors(of: culprit).forEach { kill($0, SIGKILL) }
+            if await isGone(culprit, within: 2) { return true }
+        }
+        return false
+    }
+
+    private static func isGone(_ culprit: Culprit, within seconds: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        repeat {
+            try? await Task.sleep(for: .milliseconds(500))
+            if ProcessScanner.survivors(of: culprit).isEmpty { return true }
+        } while Date() < deadline
+        return false
+    }
+
     /// Polite quit: apps get a normal Quit (they can save), everything else gets SIGTERM.
-    static func quit(_ culprit: Culprit) {
+    private static func quit(_ culprit: Culprit) {
         switch culprit.kind {
         case .simulators:
-            DispatchQueue.global(qos: .userInitiated).async {
-                _ = Shell.run("/usr/bin/xcrun", ["simctl", "shutdown", "all"])
-            }
             NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.iphonesimulator")
                 .forEach { $0.terminate() }
+            // Waits for the devices to shut down, so the grace period starts after that.
+            _ = Shell.run("/usr/bin/xcrun", ["simctl", "shutdown", "all"])
         case .app(let bundlePath):
-            let apps = NSWorkspace.shared.runningApplications.filter { $0.bundleURL?.path == bundlePath }
+            let apps = NSWorkspace.shared.runningApplications.filter {
+                $0.bundleURL.map { ProcessScanner.canonical($0.path) } == bundlePath
+            }
             if apps.isEmpty {
                 culprit.pids.forEach { kill($0, SIGTERM) }
             } else {
@@ -294,10 +344,6 @@ enum Killer {
         default:
             culprit.pids.forEach { kill($0, SIGTERM) }
         }
-    }
-
-    static func forceQuit(_ culprit: Culprit) {
-        culprit.pids.forEach { kill($0, SIGKILL) }
     }
 }
 
