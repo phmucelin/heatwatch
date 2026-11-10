@@ -22,13 +22,16 @@ struct Snapshot: Sendable {
 enum HeatLevel {
     case cool, warm, hot, critical
 
+    /// Where each level starts. These are for the core average; the hottest
+    /// core runs ~15-20 °C above it.
+    static let warmFrom = 60.0, hotFrom = 75.0, criticalFrom = 88.0
+
     init(chip: Double?, pressure: Int) {
-        // Thresholds are for the core average; the hottest core runs ~15-20 °C above it.
         let t = chip ?? 0
         switch t {
-        case ..<60: self = .cool
-        case ..<75: self = .warm
-        case ..<88: self = .hot
+        case ..<Self.warmFrom: self = .cool
+        case ..<Self.hotFrom: self = .warm
+        case ..<Self.criticalFrom: self = .hot
         default: self = .critical
         }
         // On a fanless Air macOS throttles on chassis temperature, so the die can
