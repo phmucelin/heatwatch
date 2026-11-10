@@ -4,6 +4,7 @@
 #include <IOKit/IOKitLib.h>
 #include <notify.h>
 #include <string.h>
+#include <sys/sysctl.h>
 
 // Private IOKit HID API. Apple Silicon exposes its die/SSD/battery thermal
 // sensors here, readable by any user process.
@@ -113,7 +114,24 @@ enum { kSMCUserClientMethod = 2, kSMCReadBytes = 5, kSMCKeyAtIndex = 8, kSMCRead
 
 static io_connect_t smc_conn = 0;
 static uint32_t cpu_keys[MAX_SMC_KEYS], gpu_keys[MAX_SMC_KEYS];
-static int cpu_key_count = 0, gpu_key_count = 0;
+static uint32_t core_keys[MAX_SMC_KEYS];
+static int cpu_key_count = 0, gpu_key_count = 0, core_key_count = 0;
+
+// Each M4 core exposes three SMC keys (e.g. Tp00/Tp01/Tp02): a slow one, the
+// core temperature, and an instantaneous hot spot that swings 10-25 °C above
+// it. Averaging all of them reads up to ~3 °C off and jitters, so the average
+// uses only the per-core key, the same ones Stats lists for the M4.
+static const char *const m4_core_keys[] = {
+    "Te05", "Te09", "Te0H", "Te0S",
+    "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0V", "Tp0Y", "Tp0b", "Tp0e",
+};
+
+static int is_m4(void) {
+    char brand[64] = {0};
+    size_t size = sizeof brand - 1;
+    if (sysctlbyname("machdep.cpu.brand_string", brand, &size, NULL, 0)) return 0;
+    return strstr(brand, "Apple M4") != NULL;
+}
 static int smc_state = 0; // 0 untried, 1 ready, -1 unavailable
 
 static int smc_call(smc_param_t *in, smc_param_t *out) {
@@ -177,6 +195,18 @@ static int smc_setup(void) {
         if (is_cpu && cpu_key_count < MAX_SMC_KEYS) cpu_keys[cpu_key_count++] = key;
         if (is_gpu && gpu_key_count < MAX_SMC_KEYS) gpu_keys[gpu_key_count++] = key;
     }
+    if (is_m4()) {
+        for (int i = 0; i < cpu_key_count; i++) {
+            for (size_t j = 0; j < sizeof m4_core_keys / sizeof *m4_core_keys; j++) {
+                if (cpu_keys[i] == FOURCC(m4_core_keys[j])) core_keys[core_key_count++] = cpu_keys[i];
+            }
+        }
+    }
+    // Other chips name their cores differently: fall back to every CPU key.
+    if (!core_key_count) {
+        memcpy(core_keys, cpu_keys, sizeof cpu_keys);
+        core_key_count = cpu_key_count;
+    }
     smc_state = cpu_key_count > 0 ? 1 : -1;
     return smc_state;
 }
@@ -201,7 +231,10 @@ static int smc_stats(const uint32_t *keys, int count, double *avg, double *max) 
 int hw_read_chip_temps(hw_chip_temps_t *out) {
     memset(out, 0, sizeof *out);
     if (smc_setup() != 1) return -1;
-    if (smc_stats(cpu_keys, cpu_key_count, &out->cpu_avg, &out->cpu_max)) return -1;
+    double unused;
+    if (smc_stats(core_keys, core_key_count, &out->cpu_avg, NULL)) return -1;
+    // The peak looks at every key, hot spots included; it matches the SMC's own TCMz.
+    smc_stats(cpu_keys, cpu_key_count, &unused, &out->cpu_max);
     smc_stats(gpu_keys, gpu_key_count, &out->gpu_avg, NULL);
     return 0;
 }

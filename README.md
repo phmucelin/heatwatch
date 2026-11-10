@@ -57,7 +57,7 @@ prints the same data the popover shows. Please include it in bug reports.
 
 ## How it works
 
-- Core temperatures come from the SMC (`Tp*`/`Te*` = performance/efficiency cores, `Tg*` = GPU), keys enumerated once at launch. On an M4 the average matches the firmware's own `TCMb` value. SSD and battery come from IOKit HID sensors. No root, no kernel extension, no `powermetrics`.
+- Core temperatures come from the SMC (`Tp*`/`Te*` = performance/efficiency cores, `Tg*` = GPU), keys enumerated once at launch. On an M4 the average uses the 12 per-core keys Stats uses, and the peak matches the firmware's own `TCMz` value; other chips average every `Tp*`/`Te*` key. SSD and battery come from IOKit HID sensors. No root, no kernel extension, no `powermetrics`.
   - Note: the HID `PMU tdie*` sensors many tools read are the power-management IC, not the CPU — on an M4 Air they read 15–35 °C below the cores.
 - Thermal pressure comes from the `com.apple.system.thermalpressurelevel` notification.
 - Processes come from `ps`; memory per process uses `phys_footprint` (Activity Monitor's *Memory* column) when readable.
