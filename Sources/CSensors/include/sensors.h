@@ -11,8 +11,8 @@ typedef struct {
 int hw_read_temperatures(hw_temp_t *out, int max);
 
 typedef struct {
-    double cpu_avg;   ///< mean of all CPU core sensors
-    double cpu_max;   ///< hottest CPU core sensor (what macOS throttles on)
+    double cpu_avg;   ///< mean of the per-core sensors
+    double cpu_max;   ///< hottest CPU sensor, hot spots included (what macOS throttles on)
     double gpu_avg;   ///< mean of GPU sensors, 0 if none
 } hw_chip_temps_t;
 
