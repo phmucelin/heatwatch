@@ -73,6 +73,12 @@ struct SwapActivity {
     var isActive: Bool { readPerSecond + writePerSecond >= 1_048_576 }
 }
 
+enum QuitPhase: Sendable {
+    case closing, forcing
+    /// Still running after being killed: something keeps relaunching it.
+    case failed
+}
+
 enum Settings {
     static let autoCloseDaemons = "autoCloseIdleDaemons"
     static let autoCloseAfter: TimeInterval = 15 * 60
@@ -86,7 +92,7 @@ final class Monitor: ObservableObject {
 
     @Published private(set) var snapshot = Snapshot()
     @Published private(set) var chipHistory: [Double] = []
-    @Published private(set) var quitRequests: [String: Date] = [:]
+    @Published private(set) var quitPhases: [String: QuitPhase] = [:]
     @Published private(set) var swapActivity = SwapActivity()
 
     let cores = ProcessInfo.processInfo.activeProcessorCount
@@ -121,27 +127,21 @@ final class Monitor: ObservableObject {
             }
         }
         let alive = Set(next.culprits.map(\.id))
-        quitRequests = quitRequests.filter { alive.contains($0.key) }
+        quitPhases = quitPhases.filter { $0.value != .failed || alive.contains($0.key) }
         alerts.evaluate(next, history: chipHistory)
     }
 
     func quit(_ culprit: Culprit) {
-        quitRequests[culprit.id] = Date()
-        Killer.quit(culprit)
-        refreshSoon()
-    }
-
-    func forceQuit(_ culprit: Culprit) {
-        Killer.forceQuit(culprit)
-        refreshSoon()
-    }
-
-    func isQuitting(_ culprit: Culprit) -> Bool { quitRequests[culprit.id] != nil }
-
-    /// Still alive a few seconds after a polite quit: offer the hard kill.
-    func needsForce(_ culprit: Culprit) -> Bool {
-        guard let requested = quitRequests[culprit.id] else { return false }
-        return Date().timeIntervalSince(requested) > 4
+        let id = culprit.id
+        guard quitPhases[id] == nil || quitPhases[id] == .failed else { return }
+        quitPhases[id] = .closing
+        Task {
+            let closed = await Killer.close(culprit) { @MainActor [weak self] in
+                self?.quitPhases[id] = .forcing
+            }
+            quitPhases[id] = closed ? nil : .failed
+            await refresh()
+        }
     }
 
     private func updateSwapActivity(_ memory: MemoryStats) {
@@ -159,12 +159,6 @@ final class Monitor: ObservableObject {
         )
     }
 
-    private func refreshSoon() {
-        Task {
-            try? await Task.sleep(for: .seconds(1.5))
-            await refresh()
-        }
-    }
 }
 
 @MainActor
@@ -224,12 +218,14 @@ final class Alerts {
             let isDaemon = culprit.kind == .gradleDaemon || culprit.kind == .kotlinDaemon
             if isDaemon, UserDefaults.standard.bool(forKey: Settings.autoCloseDaemons) {
                 if idleFor >= Settings.autoCloseAfter, culprit.killable {
-                    Killer.quit(culprit)
                     idleSince[culprit.id] = nil
-                    Notifier.send(
-                        title: "Fechei: \(culprit.name)",
-                        body: "Estava parado há \(Int(Settings.autoCloseAfter / 60)) min. Liberou \(Format.bytes(culprit.memory)) de memória."
-                    )
+                    Task {
+                        guard await Killer.close(culprit) else { return }
+                        Notifier.send(
+                            title: "Fechei: \(culprit.name)",
+                            body: "Estava parado há \(Int(Settings.autoCloseAfter / 60)) min. Liberou \(Format.bytes(culprit.memory)) de memória."
+                        )
+                    }
                 }
                 continue
             }

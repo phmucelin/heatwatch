@@ -20,7 +20,7 @@ Built for fanless MacBook Airs (M1–M4) doing developer work: Xcode and Gradle 
   - *Gradle (build Android)* / *Compilador Kotlin* — the background daemons, detected from `java` arguments
   - *Build do Xcode (iOS)* for clang/swift compiler processes
 - **Plain-language explanations**: every culprit says what it is, how long it's been open, and whether quitting it is safe (green) or interrupts something (orange)
-- **Encerrar → Confirmar** quits politely (apps can save, simulators are shut down with `simctl`). If it's still alive after a few seconds, a **Forçar** button sends `SIGKILL`.
+- **Encerrar → Confirmar** quits politely (apps can save, simulators are shut down with `simctl`). Whatever is still alive 5 seconds later gets `SIGKILL`, helpers included, and the row only goes away once every process of the group is gone. Unsaved work in an app that was waiting on a "Save?" dialog is lost at that point.
 
 System processes (WindowServer, kernel_task, Spotlight…) are shown with an explanation but can't be killed.
 
